@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Tuple
 
@@ -13,8 +14,8 @@ class Config:
 
     # ── Ticker & Date ──
     ticker: str = "2330.TW"
-    start_date: str = "2025-04-29"
-    end_date: str = "2026-04-29"
+    start_date: str = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+    end_date: str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
     # 主交易時區
     base_interval: str = "1h"
