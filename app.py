@@ -1,6 +1,5 @@
-import streamlit as st
+﻿import streamlit as st
 import pandas as pd
-import numpy as np
 import yfinance as yf
 import plotly.graph_objects as plotly_go
 from config import Config, ACTION_NAMES
@@ -389,6 +388,10 @@ def main():
         train_v2_btn = st.button(f"V2: DQN + SMC + MTF + RRR (Advanced) ({ticker})", use_container_width=True)
 
     if train_btn or train_v2_btn:
+        if not ticker or ticker.strip() == "":
+            st.error("Please enter a Ticker (e.g., AAPL or 2330.TW) in the input box before training.")
+            return
+
         log_status = log_container.empty()
         log_area = log_container.empty()
         log_status.info("Starting MTF DQN+SMC training...")

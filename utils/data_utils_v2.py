@@ -640,6 +640,9 @@ def download_and_build_mtf(cfg, progress_callback=None):
         ticker=cfg.ticker, start=cfg.start_date, end=cfg.end_date,
         interval=cfg.base_interval, fallback_periods=cfg.intraday_fallback_periods,
     )
+    
+    if df_h1_raw is None or len(df_h1_raw) == 0:
+        raise ValueError(f"Failed to download H1 raw data for {cfg.ticker}. Please check if the Ticker is valid.")
 
     daily_start = str((df_h1_raw.index.min() - pd.Timedelta(days=cfg.daily_extra_days)).date())
     daily_end = str((df_h1_raw.index.max() + pd.Timedelta(days=2)).date())
@@ -654,6 +657,9 @@ def download_and_build_mtf(cfg, progress_callback=None):
     if progress_callback:
         progress_callback("Building MTF features (V2)...")
     mtf_df = build_mtf_dataset(df_h1_raw, df_d1_raw, cfg)
+
+    if len(mtf_df) == 0:
+        raise ValueError("The built MTF dataset is empty. This usually happens if the Ticker is invalid or yfinance did not return enough data for the date range.")
 
     missing = [c for c in FEATURE_COLUMNS if c not in mtf_df.columns]
     if missing:
