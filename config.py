@@ -60,6 +60,12 @@ class Config:
     swing_window: int = 5
     lookback_range: int = 60
 
+    # ── Risk Reward params ──
+    rr_atr_multiplier: float = 1.5
+    rr_target: float = 2.0
+    rr_swing_buffer_pct: float = 0.002
+    min_rr_threshold: float = 1.5
+
     # ── Reproducibility ──
     seed: int = 42
 

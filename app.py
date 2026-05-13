@@ -5,8 +5,11 @@ import yfinance as yf
 import plotly.graph_objects as plotly_go
 from config import Config, ACTION_NAMES
 from train import run_training_pipeline
+from train_v2 import run_training_pipeline_v2
 from recommend import recommend_strategy
+from recommend_v2 import recommend_strategy_v2
 from utils.data_utils import FEATURE_COLUMNS, prepare_data_for_chart
+from utils.data_utils_v2 import FEATURE_COLUMNS as FEATURE_COLUMNS_V2
 
 # 設定頁面配置 (必須是第一個 Streamlit 指令)
 st.set_page_config(page_title="SMC × DRL Trading Platform", layout="wide")
@@ -48,6 +51,22 @@ def process_data_for_chart(raw_df, interval, rolling_window):
     df = prepare_data_for_chart(df, rolling_window=rolling_window)
     return df
 
+def compute_recommendation(ret, cfg):
+    agent = ret["agent"]
+    mtf_df = ret["mtf_df"]
+    feature_mean = ret["feature_mean"]
+    feature_std = ret["feature_std"]
+    if ret.get("is_v2"):
+        return recommend_strategy_v2(
+            agent=agent, latest_mtf_raw=mtf_df, cfg=cfg,
+            feature_cols=FEATURE_COLUMNS_V2, feature_mean=feature_mean, feature_std=feature_std
+        )
+    else:
+        return recommend_strategy(
+            agent=agent, latest_mtf_raw=mtf_df, cfg=cfg,
+            feature_cols=FEATURE_COLUMNS, feature_mean=feature_mean, feature_std=feature_std
+        )
+
 # ── 圖表渲染 Fragment（切換時區不會觸發整頁 rerun）──
 @st.fragment
 def render_chart():
@@ -58,7 +77,18 @@ def render_chart():
         return
 
     interval_map = {"1h (H1)": "1h", "4h (H4)": "4h", "1d (D1)": "1d", "1wk (W1)": "1wk"}
-    chart_tf = st.selectbox("Chart Timeframe", list(interval_map.keys()), index=0, key="chart_tf")
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        chart_tf = st.selectbox("Chart Timeframe", list(interval_map.keys()), index=0, key="chart_tf")
+    with col2:
+        rec = st.session_state.get("recommendation", {})
+        snap = rec.get("mtf_snapshot", {}) if rec else {}
+        rr_options = []
+        if "rr_details" in snap:
+            rr_options = [tf.upper() for tf in ["w1", "d1", "h4", "h1"] if pd.notna(snap["rr_details"][tf.lower()]["entry"])]
+        show_rr = st.multiselect("Show MTF RRR Levels", rr_options, default=[], key="show_rr_levels")
+
     interval_option = interval_map[chart_tf]
 
     with st.spinner(f"Aggregating {chart_tf} timeframe and calculating SMC features..."):
@@ -204,6 +234,38 @@ def render_chart():
                     name=label,
                 ))
 
+    # ── Draw MTF RRR Lines ──
+    if 'show_rr' in locals() and show_rr and rec and "rr_details" in snap:
+        last_date = df['date_str'].iloc[-1]
+        start_idx = max(0, len(df) - 30)
+        start_date = df['date_str'].iloc[start_idx]
+        
+        for tf_upper in show_rr:
+            tf = tf_upper.lower()
+            tf_rr = snap["rr_details"][tf]
+            entry = tf_rr["entry"]
+            sl = tf_rr["stop_loss"]
+            tp = tf_rr["take_profit"]
+            
+            fig.add_trace(plotly_go.Scatter(
+                x=[start_date, last_date], y=[entry, entry],
+                mode='lines+text', name=f'{tf_upper} Entry',
+                line=dict(color="white", width=2, dash="dashdot"),
+                text=[f"{tf_upper} Entry: {entry:,.2f}", ""], textposition="top right", textfont=dict(color="white", size=10)
+            ))
+            fig.add_trace(plotly_go.Scatter(
+                x=[start_date, last_date], y=[sl, sl],
+                mode='lines+text', name=f'{tf_upper} SL',
+                line=dict(color="#FF5252", width=2, dash="dashdot"),
+                text=[f"{tf_upper} SL: {sl:,.2f}", ""], textposition="bottom right", textfont=dict(color="#FF5252", size=10)
+            ))
+            fig.add_trace(plotly_go.Scatter(
+                x=[start_date, last_date], y=[tp, tp],
+                mode='lines+text', name=f'{tf_upper} TP',
+                line=dict(color="#00E676", width=2, dash="dashdot"),
+                text=[f"{tf_upper} TP: {tp:,.2f}", ""], textposition="top right", textfont=dict(color="#00E676", size=10)
+            ))
+
     fig.update_layout(height=550, margin=dict(l=0, r=0, t=30, b=0), xaxis_rangeslider_visible=False, xaxis_type="category", title="SMC Price Action")
     fig.update_xaxes(type="category", nticks=10)
     st.plotly_chart(fig, use_container_width=True)
@@ -269,6 +331,14 @@ def main():
 
     st.divider()
 
+    # 先預先計算 recommendation，讓 render_chart 可以讀取到 RRR 資料
+    ret = st.session_state.get("model_ret", {})
+    if ret:
+        try:
+            st.session_state["recommendation"] = compute_recommendation(ret, cfg)
+        except Exception:
+            pass
+
     # ── SMC 圖表（全寬）──
     st.subheader("SMC Stock Chart")
     render_chart()
@@ -311,9 +381,14 @@ def main():
     ticker = st.session_state.get("ticker", "UNKNOWN")
 
     # ── Training ──
-    train_btn = train_btn_placeholder.button(f"DQN + SMC + MTF + RRR ({ticker})")
+    btn_container = train_btn_placeholder.container()
+    btn_col1, btn_col2 = btn_container.columns(2)
+    with btn_col1:
+        train_btn = st.button(f"DQN + SMC + MTF + RRR ({ticker})", use_container_width=True)
+    with btn_col2:
+        train_v2_btn = st.button(f"V2: DQN + SMC + MTF + RRR (Advanced) ({ticker})", use_container_width=True)
 
-    if train_btn:
+    if train_btn or train_v2_btn:
         log_status = log_container.empty()
         log_area = log_container.empty()
         log_status.info("Starting MTF DQN+SMC training...")
@@ -328,7 +403,10 @@ def main():
             train_cfg.ticker = ticker
             train_cfg.start_date = st.session_state.get("start_date", cfg.start_date)
             train_cfg.end_date = st.session_state.get("end_date", cfg.end_date)
-            ret = run_training_pipeline(train_cfg, progress_callback=update_log)
+            if train_v2_btn:
+                ret = run_training_pipeline_v2(train_cfg, progress_callback=update_log)
+            else:
+                ret = run_training_pipeline(train_cfg, progress_callback=update_log)
             st.session_state["model_ret"] = ret
             metrics = ret["metrics"]
             final_msg = f"Training Completed! Total Return: {metrics.get('total_return', 0)*100:.1f}% | Sharpe: {metrics.get('sharpe_ratio', 0):.2f}"
@@ -343,13 +421,13 @@ def main():
 
     # ── 恢復已保存的訓練 Log ──
     saved_log = st.session_state.get("train_log", [])
-    if saved_log and not train_btn:
+    if saved_log and not (train_btn or train_v2_btn):
         log_area = log_container.empty()
         log_area.markdown(_render_log_html(saved_log), unsafe_allow_html=True)
 
     # ── Report ──
     ret = st.session_state.get("model_ret", {})
-    if not ret and not train_btn:
+    if not ret and not (train_btn or train_v2_btn):
         if not saved_log:
             log_placeholder.info("Waiting for new training...")
         report_placeholder.info("Waiting for model training...")
@@ -360,23 +438,13 @@ def main():
 
     report_placeholder.info("Running strategy inference...")
     try:
-        agent = ret["agent"]
-        mtf_df = ret["mtf_df"]
-        feature_mean = ret["feature_mean"]
-        feature_std = ret["feature_std"]
-        metrics = ret["metrics"]
-
-        recommendation = recommend_strategy(
-            agent=agent,
-            latest_mtf_raw=mtf_df,
-            cfg=cfg,
-            feature_cols=FEATURE_COLUMNS,
-            feature_mean=feature_mean,
-            feature_std=feature_std,
-        )
+        recommendation = st.session_state.get("recommendation")
+        if not recommendation:
+            recommendation = compute_recommendation(ret, cfg)
 
         rr = recommendation["risk_reward_plan"]
         snap = recommendation["mtf_snapshot"]
+        metrics = ret["metrics"]
 
         # 清除 placeholder，改用四欄排版
         report_placeholder.empty()
@@ -411,7 +479,7 @@ def main():
         with r4:
             if rr.get("risk_reward_valid"):
                 st.markdown(f"""
-##### RRR
+##### Current Target RRR
 * Entry: {rr['entry_price']:,.2f}
 * Stop Loss: {rr['stop_loss_price']:,.2f}
 * Take Profit: {rr['take_profit_price']:,.2f}
@@ -419,7 +487,26 @@ def main():
 * Basis: {rr.get('take_profit_basis', '')}
                 """)
             else:
-                st.markdown("##### RRR\n*No valid RRR*")
+                st.markdown("##### Current Target RRR\n*No valid RRR*")
+
+        if "rr_details" in snap:
+            st.markdown("---")
+            st.markdown("#### MTF Risk Reward Analysis")
+            rr_cols = st.columns(4)
+            for i, tf in enumerate(["w1", "d1", "h4", "h1"]):
+                with rr_cols[i]:
+                    tf_rr = snap["rr_details"][tf]
+                    st.markdown(f"##### {tf.upper()} Level")
+                    if pd.notna(tf_rr["entry"]):
+                        st.markdown(f"""
+* **Entry**: {tf_rr['entry']:,.2f}
+* **Stop Loss**: {tf_rr['stop_loss']:,.2f}
+* **Take Profit**: {tf_rr['take_profit']:,.2f}
+* **RR Ratio**: **{tf_rr['rr_ratio']:.2f}**
+* **Basis**: {tf_rr['basis']}
+                        """)
+                    else:
+                        st.markdown("*No valid setup*")
 
     except Exception as e:
         report_placeholder.error(f"Inference failed: {e}")
