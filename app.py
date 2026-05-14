@@ -9,6 +9,7 @@ from recommend import recommend_strategy
 from recommend_v2 import recommend_strategy_v2
 from utils.data_utils import FEATURE_COLUMNS, prepare_data_for_chart
 from utils.data_utils_v2 import FEATURE_COLUMNS as FEATURE_COLUMNS_V2
+from ai_comment import generate_ai_comment
 
 # 設定頁面配置 (必須是第一個 Streamlit 指令)
 st.set_page_config(page_title="SMC × DRL Trading Platform", layout="wide")
@@ -382,7 +383,7 @@ def main():
     <div id="tab-nav-anchor"></div>
     """, unsafe_allow_html=True)
 
-    tab_col1, tab_col2, _ = st.columns([0.9, 1.1, 4])
+    tab_col1, tab_col2, tab_col3, _ = st.columns([0.9, 1.1, 0.8, 3.2])
     with tab_col1:
         if st.button("🤖 DQN Training Log", use_container_width=True, key="tab_training",
                      type="primary" if active_tab == "training" else "secondary"):
@@ -392,6 +393,11 @@ def main():
         if st.button("📊 DRL × SMC Report", use_container_width=True, key="tab_report",
                      type="primary" if active_tab == "report" else "secondary"):
             st.session_state["active_tab"] = "report"
+            st.rerun()
+    with tab_col3:
+        if st.button("🧠 AI Comment", use_container_width=True, key="tab_ai",
+                     type="primary" if active_tab == "ai_comment" else "secondary"):
+            st.session_state["active_tab"] = "ai_comment"
             st.rerun()
 
     st.markdown('<div style="border-top: 2px solid #E0E0E0; margin: -0.5rem 0 1rem 0;"></div>', unsafe_allow_html=True)
@@ -569,6 +575,47 @@ def main():
 
         except Exception as e:
             st.error(f"Inference failed: {e}")
+
+    # ── AI 評語 Tab ──
+    elif active_tab == "ai_comment":
+        ret = st.session_state.get("model_ret", {})
+        if not ret:
+            st.info("請先完成模型訓練，才能使用 AI 評語功能。")
+            return
+
+        st.subheader("🧠 AI 評語")
+
+        recommendation = st.session_state.get("recommendation")
+        if not recommendation:
+            try:
+                recommendation = compute_recommendation(ret, cfg)
+                st.session_state["recommendation"] = recommendation
+            except Exception as e:
+                st.error(f"無法計算推薦指標：{e}")
+                return
+
+        metrics = ret.get("metrics", {})
+
+        col_btn, col_clear, _ = st.columns([1, 1, 4])
+        with col_btn:
+            gen_btn = st.button("✨ 生成 AI 評語", use_container_width=True)
+        with col_clear:
+            if st.session_state.get("ai_comment"):
+                if st.button("🔄 重新生成", use_container_width=True):
+                    st.session_state.pop("ai_comment", None)
+                    st.rerun()
+
+        if gen_btn:
+            with st.spinner("AI 分析中，請稍候..."):
+                try:
+                    comment = generate_ai_comment(recommendation, metrics)
+                    st.session_state["ai_comment"] = comment
+                except Exception as e:
+                    st.error(f"AI 評語生成失敗：{e}")
+
+        if st.session_state.get("ai_comment"):
+            with st.container(border=True):
+                st.markdown(st.session_state["ai_comment"])
 
 if __name__ == '__main__':
     main()
